@@ -23,7 +23,7 @@ O objetivo principal desta visualização é promover uma análise sobre a conec
 
 1.  Clone este repositório:
     ```bash
-    git clone [https://github.com/SEU_USUARIO_GITHUB/Rede-Academica-UFRN.git](https://github.com/SEU_USUARIO_GITHUB/Rede-Academica-UFRN.git)
+    git clone https://github.com/Arthur-Holanda/Rede-Academica-UFRN
     ```
 2.  Navegue até a pasta do projeto e instale as dependências:
     ```bash
