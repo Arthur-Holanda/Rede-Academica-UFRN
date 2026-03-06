@@ -64,33 +64,59 @@ MAX_NODE_SIZE = 100
 
 def get_orientation_details_from_string(details_str_original_case, entry_str_lower_for_co_check):
     parsed_orientations = []
-    if not details_str_original_case: return parsed_orientations
+    if not details_str_original_case:
+        return parsed_orientations
+
     details_str_lower = details_str_original_case.lower()
+
+    # Determina se é coorientação para esta entrada específica
     is_co_global = entry_str_lower_for_co_check.endswith(" co)") or \
                    details_str_lower.startswith("coorientador") or \
                    details_str_lower.startswith("co-orientador") or \
                    ("coorientador" in details_str_lower.split(',')[0])
 
+    # Usamos IFs independentes (não elif) para garantir a leitura de graus compostos
     pos_doc_info = re.search(r"(?:pós-doutorado|pos-doutorado|pós doc)\s*(?:,\s*)?(\d{4})?", details_str_lower)
     if pos_doc_info:
         year_pd = pos_doc_info.group(1) if pos_doc_info.group(1) else "N/A"
         parsed_orientations.append({'type': "Pós-Doutorado", 'year': year_pd, 'co': is_co_global})
-    elif re.search(r"doutorado\s*(?:,\s*)?(\d{4})?", details_str_lower):
-        doutorado_info = re.search(r"doutorado\s*(?:,\s*)?(\d{4})?", details_str_lower)
+
+    doutorado_info = re.search(r"doutorado\s*(?:,\s*)?(\d{4})?", details_str_lower)
+    if doutorado_info:
         year_d = doutorado_info.group(1) if doutorado_info.group(1) else "N/A"
         parsed_orientations.append({'type': "Doutorado", 'year': year_d, 'co': is_co_global})
-    elif re.search(r"mestrado\s*(?:,\s*)?(\d{4})?", details_str_lower):
-        mestrado_info = re.search(r"mestrado\s*(?:,\s*)?(\d{4})?", details_str_lower)
+
+    mestrado_info = re.search(r"mestrado\s*(?:,\s*)?(\d{4})?", details_str_lower)
+    if mestrado_info:
         year_m = mestrado_info.group(1) if mestrado_info.group(1) else "N/A"
         parsed_orientations.append({'type': "Mestrado", 'year': year_m, 'co': is_co_global})
+
+    # Fallback caso o padrão principal não seja encontrado
+    if not parsed_orientations:
+        degree_type_fallback = None
+        year_fallback = "N/A"
+        year_match_fallback = re.search(r"(\d{4})", details_str_lower)
+        if year_match_fallback:
+            year_fallback = year_match_fallback.group(1)
+
+        if "pós-doutorado" in details_str_lower or "pos-doutorado" in details_str_lower or "pós doc" in details_str_lower:
+            degree_type_fallback = "Pós-Doutorado"
+        elif "doutorado" in details_str_lower:
+            degree_type_fallback = "Doutorado"
+        elif "mestrado" in details_str_lower:
+            degree_type_fallback = "Mestrado"
+
+        if degree_type_fallback:
+             parsed_orientations.append({'type': degree_type_fallback, 'year': year_fallback, 'co': is_co_global})
+
     return parsed_orientations
 
+# --- 3. Processamento de Dados ---
 def default_node_factory():
     return {'Formacao': 'N/A', 'Campus': 'N/A', 'Lotacao': 'N/A', 'Mestrado_Orientador': [], 'Doutorado_Orientador': [], 'Pos_Doutorado_Supervisor': []}
 
-@st.cache_data
+# Removido o @st.cache_data temporariamente para debugar e garantir que os dados não se percam
 def processar_dados_da_rede():
-    # Carregar os dados diretamente do novo ficheiro CSV
     df = pd.read_csv("dados_acacia.csv")
 
     all_nodes = set()
@@ -107,12 +133,14 @@ def processar_dados_da_rede():
         node_details[current_person]['Campus'] = row['CAMPUS_PRINCIPAL']
         node_details[current_person]['Lotacao'] = row['LOTACAO']
 
+        # Processar DESCENDENTES (ORIENTANDOS_ACADEMICOS)
         advisees_str = row['ORIENTANDOS_ACADEMICOS']
         if pd.notna(advisees_str) and isinstance(advisees_str, str):
             individual_advisee_entries = advisees_str.split(';')
             for entry in individual_advisee_entries:
                 entry = entry.strip()
                 if not entry: continue
+
                 name_match = name_regex.match(entry)
                 if name_match:
                     advisee_name = name_match.group(1).strip()
@@ -120,6 +148,7 @@ def processar_dados_da_rede():
                     details_match_re = re.search(r"\((.*)\)", entry)
                     if details_match_re:
                         details_text = details_match_re.group(1)
+
                     orientation_list = get_orientation_details_from_string(details_text, entry.lower())
 
                     for or_details in orientation_list:
@@ -133,20 +162,31 @@ def processar_dados_da_rede():
                                 'source': current_person, 'target': advisee_name,
                                 'type': degree_type, 'co': is_co_role, 'year': year
                             })
+                            # --- GARANTIA DE INSERÇÃO NA LISTA ---
+                            if degree_type == "Mestrado":
+                                node_details[advisee_name]['Mestrado_Orientador'].append(f"{year} por {current_person}{' (Co)' if is_co_role else ''}")
+                            elif degree_type == "Doutorado":
+                                node_details[advisee_name]['Doutorado_Orientador'].append(f"{year} por {current_person}{' (Co)' if is_co_role else ''}")
+                            elif degree_type == "Pós-Doutorado":
+                                node_details[advisee_name]['Pos_Doutorado_Supervisor'].append(f"{year} por {current_person}{' (Co)' if is_co_role else ''}")
 
+        # Processar ASCENDENTES (ORIENTADORES_ACADEMICOS)
         academic_advisors_str = row['ORIENTADORES_ACADEMICOS']
         if pd.notna(academic_advisors_str) and isinstance(academic_advisors_str, str):
             individual_academic_advisor_entries = academic_advisors_str.split(';')
             for entry in individual_academic_advisor_entries:
                 entry = entry.strip()
                 if not entry: continue
+
                 name_part_match = name_regex.match(entry)
                 if not name_part_match: continue
+
                 names_str = name_part_match.group(1).strip()
                 details_text_asc = ""
                 details_match_re_asc = re.search(r"\((.*)\)", entry)
                 if details_match_re_asc:
                     details_text_asc = details_match_re_asc.group(1)
+
                 orientation_list_asc = get_orientation_details_from_string(details_text_asc, entry.lower())
                 actual_advisor_names = [name.strip() for name in names_str.split(" E ") if name.strip()]
 
@@ -155,12 +195,29 @@ def processar_dados_da_rede():
                         degree_type = or_details['type']
                         year = or_details['year']
                         is_co_role = or_details['co']
+
                         if advisor_name and degree_type:
                             all_nodes.add(advisor_name)
                             detailed_edges.append({
                                 'source': advisor_name, 'target': current_person,
                                 'type': degree_type, 'co': is_co_role, 'year': year
                             })
+                            # --- GARANTIA DE INSERÇÃO NA LISTA ---
+                            if degree_type == "Mestrado":
+                                node_details[current_person]['Mestrado_Orientador'].append(f"{year} por {advisor_name}{' (Co)' if is_co_role else ''}")
+                            elif degree_type == "Doutorado":
+                                node_details[current_person]['Doutorado_Orientador'].append(f"{year} por {advisor_name}{' (Co)' if is_co_role else ''}")
+                            elif degree_type == "Pós-Doutorado":
+                                node_details[current_person]['Pos_Doutorado_Supervisor'].append(f"{year} por {advisor_name}{' (Co)' if is_co_role else ''}")
+
+    unique_edges_tracker = set()
+    final_detailed_edges = []
+    for edge in detailed_edges:
+        edge_tuple = (edge['source'], edge['target'], edge['type'], edge['co'], edge['year'])
+        if edge_tuple not in unique_edges_tracker:
+            unique_edges_tracker.add(edge_tuple)
+            final_detailed_edges.append(edge)
+    detailed_edges = final_detailed_edges
 
     out_degree_total = defaultdict(int)
     in_degree_total = defaultdict(int)
@@ -177,10 +234,12 @@ d3_nodes = []
 d3_links = []
 docent_advisors = set()
 
+# Identificar orientadores de docentes
 for edge in detailed_edges:
     if edge['target'] in imd_docentes:
         docent_advisors.add(edge['source'])
 
+# 1. Montar JSON dos Nós
 for node_name in all_nodes:
     is_docente = node_name in imd_docentes
     is_docent_advisor = node_name in docent_advisors
@@ -189,11 +248,43 @@ for node_name in all_nodes:
     total_degree = out_degree_total.get(node_name, 0) + in_degree_total.get(node_name, 0)
     node_size = min(BASE_NODE_SIZE + (total_degree ** 1.2) * 0.5, MAX_NODE_SIZE)
 
-    title_text = f"{node_name}\\nFormação: {node_details[node_name]['Formacao']}\\nLotação: {node_details[node_name]['Lotacao']}"
+    # --- Construção do Tooltip Completo (Corrigido) ---
+    title_text = f"<div style='margin-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 5px; font-size: 14px;'><strong>{node_name}</strong></div>"
     
+    if node_details[node_name]['Formacao'] != 'N/A':
+        title_text += f"Formação: {node_details[node_name]['Formacao']}<br>"
+    if node_details[node_name]['Campus'] != 'N/A':
+        title_text += f"Campus: {node_details[node_name]['Campus']}<br>"
+    if node_details[node_name]['Lotacao'] != 'N/A':
+        title_text += f"Lotação: {node_details[node_name]['Lotacao']}<br>"
+        
+    if node_details[node_name]['Mestrado_Orientador']:
+        mestres = list(set(node_details[node_name]['Mestrado_Orientador']))
+        title_text += "Mestrado: " + " e ".join(mestres) + "<br>"
+        
+    if node_details[node_name]['Doutorado_Orientador']:
+        doutores = list(set(node_details[node_name]['Doutorado_Orientador']))
+        title_text += "Doutorado: " + " e ".join(doutores) + "<br>"
+        
+    if node_details[node_name]['Pos_Doutorado_Supervisor']:
+        pos_docs = list(set(node_details[node_name]['Pos_Doutorado_Supervisor']))
+        title_text += "Pós-Doutorado: " + " e ".join(pos_docs) + "<br>"
+        
+    if (out_degree_total[node_name] != 0) or (in_degree_total[node_name] != 0):
+        title_text += "<br>"
+    if (out_degree_total[node_name] != 0):
+        title_text += f"Orientou {out_degree_total[node_name]} vez(es)<br>"
+    if (in_degree_total[node_name] != 0):
+        title_text += f"Foi Orientado {in_degree_total[node_name]} vez(es)"
+
     d3_nodes.append({
         "id": node_name, "color": node_color, "size": node_size, "title": title_text
     })
+
+
+# ==== ADICIONE ISTO AQUI PARA DEPURAR ====
+st.write("RAIO-X DO PRIMEIRO NÓ:", d3_nodes[0])
+# ========================================
 
 for edge in detailed_edges:
     edge_color = ""
@@ -219,6 +310,7 @@ for edge in detailed_edges:
 graph_data_json = json.dumps({"nodes": d3_nodes, "links": d3_links})
 
 # --- 5. Renderização com D3.js ---
+# --- 5. Renderização com D3.js ---
 html_d3 = f"""
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -230,10 +322,9 @@ html_d3 = f"""
         svg {{ width: 100vw; height: 100vh; display: block; cursor: grab; }}
         svg:active {{ cursor: grabbing; }}
         
-        /* Estilos da Interface de Busca e Legenda flutuante */
+        /* Interface de Busca e Legenda flutuante */
         #ui-container {{
             position: absolute; top: 15px; right: 15px;
-            /* Fundo transparente com leve efeito de vidro para a leitura do texto não sumir */
             background-color: rgba(0, 0, 0, 0.2); 
             backdrop-filter: blur(4px);
             border: 1px solid rgba(255, 255, 255, 0.1);
@@ -241,17 +332,12 @@ html_d3 = f"""
             width: 250px; z-index: 10;
             transition: all 0.3s ease;
         }}
-        /* Classe ativada quando o menu for minimizado */
         #ui-container.minimized {{
-            background-color: transparent;
-            border-color: transparent;
-            backdrop-filter: none;
-            padding: 10px;
+            background-color: transparent; border-color: transparent;
+            backdrop-filter: none; padding: 10px;
         }}
-        
         #ui-header {{
-            cursor: pointer; display: flex; justify-content: space-between; align-items: center;
-            user-select: none;
+            cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;
         }}
         #ui-header h4 {{ margin: 0; font-size: 15px; }}
         #ui-body {{ display: block; margin-top: 15px; transition: opacity 0.3s; }}
@@ -266,22 +352,28 @@ html_d3 = f"""
         .legend-item {{ display: flex; align-items: center; margin-bottom: 8px; font-size: 12px; }}
         .color-box {{ width: 14px; height: 14px; border-radius: 50%; margin-right: 10px; border: 1px solid rgba(255, 255, 255, 0.3); }}
         .line-box {{ width: 20px; height: 3px; margin-right: 10px; }}
+
+        #tooltip {{
+            position: absolute; background-color: rgba(15, 15, 25, 0.95); color: #fff;
+            padding: 10px 15px; border-radius: 6px; pointer-events: none;
+            font-size: 13px; line-height: 1.4; border: 1px solid #5DD5F0;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5); opacity: 0; transition: opacity 0.2s; z-index: 20;
+        }}
     </style>
 </head>
 <body>
+    <div id="tooltip"></div>
+
     <div id="ui-container">
         <div id="ui-header">
             <h4>Menu e Legenda</h4>
             <span id="ui-arrow">▼</span>
         </div>
-        
         <div id="ui-body">
             <input type="text" id="search-input" class="search-box" placeholder="Digite o nome...">
             <button id="search-btn" class="btn btn-search">Buscar</button>
-            <button id="reset-btn" class="btn btn-reset">Limpar busca</button>
-            
+            <button id="reset-btn" class="btn btn-reset">Limpar Vista</button>
             <hr style="border-color: rgba(255,255,255,0.1); margin: 15px 0;">
-            
             <h4 style="margin: 0 0 10px 0; font-size: 14px;">Legenda</h4>
             <div class="legend-item"><div class="color-box" style="background-color: {PALETTE['medium_blue_purple']};"></div>Professor IMD / Orientador</div>
             <div class="legend-item"><div class="color-box" style="background-color: {PALETTE['light_blue_cyan']};"></div>Outro Pesquisador</div>
@@ -303,18 +395,39 @@ html_d3 = f"""
         const svg = d3.select("#network-graph");
         const g = svg.append("g");
 
-        // Configuração do comportamento da câmara (Zoom e Pan)
         const zoom = d3.zoom().scaleExtent([0.1, 4]).on("zoom", (event) => {{
             g.attr("transform", event.transform);
         }});
         svg.call(zoom);
 
-        // Física da rede
+        // ==========================================
+        // CRIAR MARCADORES (SETAS)
+        // ==========================================
+        const defs = svg.append("defs");
+        const uniqueColors = [...new Set(graphData.links.map(d => d.color))];
+        
+        defs.selectAll("marker")
+            .data(uniqueColors)
+            .enter().append("marker")
+            .attr("id", d => `arrow-${{d.replace('#', '')}}`)
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", 0) 
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M0,-5L10,0L0,5")
+            .attr("fill", d => d);
+
+        // ==========================================
+        // FÍSICA E DESENHO
+        // ==========================================
         const simulation = d3.forceSimulation(graphData.nodes)
-            .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(60))
-            .force("charge", d3.forceManyBody().strength(-100))
+            .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(70))
+            .force("charge", d3.forceManyBody().strength(-150))
             .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(d => d.size + 2));
+            .force("collision", d3.forceCollide().radius(d => d.size + 4));
 
         const link = g.append("g")
             .attr("stroke-opacity", 0.6)
@@ -323,7 +436,8 @@ html_d3 = f"""
             .join("line")
             .attr("stroke", d => d.color)
             .attr("stroke-width", d => d.width)
-            .attr("stroke-dasharray", d => d.dashed === "0" ? null : d.dashed);
+            .attr("stroke-dasharray", d => d.dashed === "0" ? null : d.dashed)
+            .attr("marker-end", d => `url(#arrow-${{d.color.replace('#', '')}})`);
 
         const node = g.append("g")
             .selectAll("circle")
@@ -335,11 +449,45 @@ html_d3 = f"""
             .attr("stroke-width", 1.5)
             .call(drag(simulation));
 
-        node.append("title").text(d => d.title);
+        const tooltip = d3.select("#tooltip");
 
+        node.on("mouseover", function(event, d) {{
+            tooltip.transition().duration(200).style("opacity", 1);
+            tooltip.html(d.title);
+            d3.select(this).attr("stroke", "#FFF").attr("stroke-width", 3);
+        }})
+        .on("mousemove", function(event) {{
+            tooltip.style("left", (event.pageX + 15) + "px")
+                   .style("top", (event.pageY - 15) + "px");
+        }})
+        .on("mouseout", function(event, d) {{
+            tooltip.transition().duration(500).style("opacity", 0);
+            d3.select(this).attr("stroke", "#222222").attr("stroke-width", 1.5);
+        }});
+        
+
+        // Lógica matemática para as setas pararem na borda
         simulation.on("tick", () => {{
-            link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-                .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => {{
+                    const dx = d.target.x - d.source.x;
+                    const dy = d.target.y - d.source.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist === 0) return d.target.x;
+                    const padding = d.target.size + 8; // Raio do nó + compensação da seta
+                    return d.target.x - (dx * padding) / dist;
+                }})
+                .attr("y2", d => {{
+                    const dx = d.target.x - d.source.x;
+                    const dy = d.target.y - d.source.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist === 0) return d.target.y;
+                    const padding = d.target.size + 8; // Raio do nó + compensação da seta
+                    return d.target.y - (dy * padding) / dist;
+                }});
+
             node.attr("cx", d => d.x).attr("cy", d => d.y);
         }});
 
@@ -361,74 +509,78 @@ html_d3 = f"""
             return d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended);
         }}
 
-        // ==========================================
-        // LÓGICA DE BUSCA E ANIMAÇÃO DA CÂMARA
-        // ==========================================
-        function searchNode() {{
+function searchNode() {{
             const term = document.getElementById('search-input').value.toLowerCase().trim();
-            if (!term) {{
-                resetView();
-                return;
-            }}
+            if (!term) {{ resetView(); return; }}
 
             const matchedNodes = graphData.nodes.filter(n => n.id.toLowerCase().includes(term));
-            
-            if (matchedNodes.length === 0) {{
-                alert('Nenhum pesquisador encontrado com esse nome.');
-                resetView();
-                return;
-            }}
+            if (matchedNodes.length === 0) {{ alert('Nenhum pesquisador encontrado com esse nome.'); resetView(); return; }}
 
-            // Esbate os nós que não correspondem e destaca os encontrados
+            // 1. Identifica os IDs de quem foi buscado
+            const matchedIds = new Set(matchedNodes.map(n => n.id));
+
+            // 2. Mapeia os vizinhos (conexões diretas) e as linhas que os unem
+            const neighborIds = new Set();
+            const connectedLinks = new Set();
+
+            graphData.links.forEach(l => {{
+                // No D3, após a simulação iniciar, source e target viram objetos
+                if (matchedIds.has(l.source.id)) {{
+                    neighborIds.add(l.target.id);
+                    connectedLinks.add(l);
+                }} else if (matchedIds.has(l.target.id)) {{
+                    neighborIds.add(l.source.id);
+                    connectedLinks.add(l);
+                }}
+            }});
+
+            // 3. Destaca o pesquisador e seus vizinhos, esmaecendo o resto
             node.transition().duration(500)
-                .attr("opacity", d => d.id.toLowerCase().includes(term) ? 1 : 0.05)
-                .attr("stroke", d => d.id.toLowerCase().includes(term) ? "#FFF" : "#222222")
-                .attr("stroke-width", d => d.id.toLowerCase().includes(term) ? 3 : 1.5);
+                .attr("opacity", d => (matchedIds.has(d.id) || neighborIds.has(d.id)) ? 1 : 0.05)
+                .attr("stroke", d => matchedIds.has(d.id) ? "#FFF" : "#222222")
+                .attr("stroke-width", d => matchedIds.has(d.id) ? 3 : 1.5);
             
-            // Esbate todas as arestas para dar foco exclusivo ao nó
-            link.transition().duration(500).attr("stroke-opacity", 0.05);
+            // 4. Esconde as linhas distantes e suas setas alterando a "opacity" geral para zero
+            link.transition().duration(500)
+                .attr("opacity", d => connectedLinks.has(d) ? 1 : 0.0) 
+                .attr("stroke-opacity", d => connectedLinks.has(d) ? 0.8 : 0.0);
 
-            // Calcula a posição para mover a câmara (Zoom-in no primeiro resultado)
+            // 5. Move a câmera para o primeiro resultado
             const target = matchedNodes[0];
-            const transform = d3.zoomIdentity
-                .translate(width / 2, height / 2) // Vai para o centro do ecrã
-                .scale(2)                         // Nível do zoom
-                .translate(-target.x, -target.y); // Posição do nó alvo
-            
+            const transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(2).translate(-target.x, -target.y);
             svg.transition().duration(1200).call(zoom.transform, transform);
         }}
 
         function resetView() {{
             document.getElementById('search-input').value = '';
-            node.transition().duration(500).attr("opacity", 1).attr("stroke", "#222222").attr("stroke-width", 1.5);
-            link.transition().duration(500).attr("stroke-opacity", 0.6);
             
-            // Repõe o zoom para a escala 1x e centra o grafo
+            node.transition().duration(500)
+                .attr("opacity", 1)
+                .attr("stroke", "#222222")
+                .attr("stroke-width", 1.5);
+                
+            link.transition().duration(500)
+                .attr("opacity", 1)          // Traz as setas de volta
+                .attr("stroke-opacity", 0.6); // Retorna a transparência original da linha
+                
             svg.transition().duration(1000).call(zoom.transform, d3.zoomIdentity);
         }}
 
-        // Atribui os eventos de clique e "Enter" do teclado aos botões
         document.getElementById('search-btn').addEventListener('click', searchNode);
         document.getElementById('reset-btn').addEventListener('click', resetView);
         document.getElementById('search-input').addEventListener('keypress', function(e) {{
             if (e.key === 'Enter') searchNode();
         }});
-        // Minimizar interface
+
         document.getElementById('ui-header').addEventListener('click', function() {{
             const body = document.getElementById('ui-body');
             const arrow = document.getElementById('ui-arrow');
             const container = document.getElementById('ui-container');
             
             if (body.style.display === 'none') {{
-                // Expandir
-                body.style.display = 'block';
-                arrow.textContent = '▼';
-                container.classList.remove('minimized');
+                body.style.display = 'block'; arrow.textContent = '▼'; container.classList.remove('minimized');
             }} else {{
-                // Retrair
-                body.style.display = 'none';
-                arrow.textContent = '▶';
-                container.classList.add('minimized');
+                body.style.display = 'none'; arrow.textContent = '▶'; container.classList.add('minimized');
             }}
         }});
     </script>
