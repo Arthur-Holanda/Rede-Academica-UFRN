@@ -5,13 +5,12 @@ import io
 import re
 from collections import defaultdict
 import math
-from pyvis.network import Network
 import streamlit.components.v1 as components
 import json
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
-import community as community_louvain # <-- ADICIONE ESTA LINHA
+import community as community_louvain 
 import streamlit.components.v1 as components
 
 # --- 1. Configuração da Página Streamlit ---

@@ -2,5 +2,4 @@ streamlit
 pandas
 networkx
 matplotlib
-pyvis
 python-louvain

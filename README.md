@@ -2,7 +2,7 @@
 
 Este projeto apresenta uma aplicação web interativa, desenvolvida com Streamlit, para visualizar e analisar a rede de orientação acadêmica de professores dos departamentos de IMD, DIMAP e DCA da Universidade Federal do Rio Grande do Norte (UFRN).
 
-**[Acesse a aplicação online aqui!](URL_DA_SUA_APP_AQUI)**
+**[Acesse a aplicação online aqui!](https://rede-academica-ufrn.streamlit.app/)**
 
 ## Sobre o Projeto
 
