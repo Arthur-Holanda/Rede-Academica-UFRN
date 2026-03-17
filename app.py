@@ -115,7 +115,7 @@ def get_orientation_details_from_string(details_str_original_case, entry_str_low
 def default_node_factory():
     return {'Formacao': 'N/A', 'Campus': 'N/A', 'Lotacao': 'N/A', 'Mestrado_Orientador': [], 'Doutorado_Orientador': [], 'Pos_Doutorado_Supervisor': []}
 
-# Removido o @st.cache_data temporariamente para debugar e garantir que os dados não se percam
+@st.cache_data # Devolvemos o cache para a aplicação voltar a carregar rápido!
 def processar_dados_da_rede():
     df = pd.read_csv("dados_acacia.csv")
 
@@ -162,7 +162,7 @@ def processar_dados_da_rede():
                                 'source': current_person, 'target': advisee_name,
                                 'type': degree_type, 'co': is_co_role, 'year': year
                             })
-                            # --- GARANTIA DE INSERÇÃO NA LISTA ---
+                            # --- GARANTIA DE INSERÇÃO NA LISTA (Vai para o Tooltip) ---
                             if degree_type == "Mestrado":
                                 node_details[advisee_name]['Mestrado_Orientador'].append(f"{year} por {current_person}{' (Co)' if is_co_role else ''}")
                             elif degree_type == "Doutorado":
@@ -202,7 +202,7 @@ def processar_dados_da_rede():
                                 'source': advisor_name, 'target': current_person,
                                 'type': degree_type, 'co': is_co_role, 'year': year
                             })
-                            # --- GARANTIA DE INSERÇÃO NA LISTA ---
+                            # --- GARANTIA DE INSERÇÃO NA LISTA (Vai para o Tooltip) ---
                             if degree_type == "Mestrado":
                                 node_details[current_person]['Mestrado_Orientador'].append(f"{year} por {advisor_name}{' (Co)' if is_co_role else ''}")
                             elif degree_type == "Doutorado":
@@ -210,14 +210,63 @@ def processar_dados_da_rede():
                             elif degree_type == "Pós-Doutorado":
                                 node_details[current_person]['Pos_Doutorado_Supervisor'].append(f"{year} por {advisor_name}{' (Co)' if is_co_role else ''}")
 
-    unique_edges_tracker = set()
-    final_detailed_edges = []
+    # ==========================================
+    # FILTRO DE ARESTAS: PRIORIDADE E DEDUPLICAÇÃO
+    # ==========================================
+    hierarchy = {"Pós-Doutorado": 3, "Doutorado": 2, "Mestrado": 1}
+    
+    best_main_edges = {}
+    best_co_edges = {}
+    
     for edge in detailed_edges:
-        edge_tuple = (edge['source'], edge['target'], edge['type'], edge['co'], edge['year'])
-        if edge_tuple not in unique_edges_tracker:
-            unique_edges_tracker.add(edge_tuple)
-            final_detailed_edges.append(edge)
-    detailed_edges = final_detailed_edges
+        pair = (edge['source'], edge['target'])
+        score = hierarchy.get(edge['type'], 0)
+        
+        if not edge['co']: # Orientação Principal
+            if pair not in best_main_edges or score > hierarchy.get(best_main_edges[pair]['type'], 0):
+                best_main_edges[pair] = edge
+        else: # Coorientação
+            if pair not in best_co_edges or score > hierarchy.get(best_co_edges[pair]['type'], 0):
+                best_co_edges[pair] = edge
+                
+    final_filtered_edges = []
+    
+    all_pairs = set(best_main_edges.keys()).union(set(best_co_edges.keys()))
+    for pair in all_pairs:
+        main_edge = best_main_edges.get(pair)
+        co_edge = best_co_edges.get(pair)
+        
+        if main_edge and not co_edge:
+            final_filtered_edges.append(main_edge)
+        elif co_edge and not main_edge:
+            final_filtered_edges.append(co_edge)
+        else:
+            main_score = hierarchy.get(main_edge['type'], 0)
+            co_score = hierarchy.get(co_edge['type'], 0)
+            
+            if main_score >= co_score:
+                # Se a orientação principal for de nível igual ou superior, ela já cobre a coorientação.
+                final_filtered_edges.append(main_edge)
+            else:
+                # O PULO DO GATO: Se a coorientação for maior (Co-Doutorado > Principal-Mestrado),
+                # guardamos AMBAS. A principal entra primeiro (desenhada por baixo) e a tracejada depois (por cima).
+                final_filtered_edges.append(main_edge)
+                final_filtered_edges.append(co_edge)
+                
+    detailed_edges = final_filtered_edges
+    # ==========================================
+
+    # Calcula os graus de forma única (1 por par de orientador/aluno) 
+    # para que as arestas duplas não inflem artificialmente o tamanho das bolinhas
+    unique_pairs = set((edge['source'], edge['target']) for edge in detailed_edges)
+    out_degree_total = defaultdict(int)
+    in_degree_total = defaultdict(int)
+    
+    for source, target in unique_pairs:
+        out_degree_total[source] += 1
+        in_degree_total[target] += 1
+
+    return all_nodes, imd_docentes, detailed_edges, node_details, out_degree_total, in_degree_total
 
     out_degree_total = defaultdict(int)
     in_degree_total = defaultdict(int)
@@ -282,9 +331,7 @@ for node_name in all_nodes:
     })
 
 
-# ==== ADICIONE ISTO AQUI PARA DEPURAR ====
-st.write("RAIO-X DO PRIMEIRO NÓ:", d3_nodes[0])
-# ========================================
+
 
 for edge in detailed_edges:
     edge_color = ""
@@ -322,7 +369,6 @@ html_d3 = f"""
         svg {{ width: 100vw; height: 100vh; display: block; cursor: grab; }}
         svg:active {{ cursor: grabbing; }}
         
-        /* Interface de Busca e Legenda flutuante */
         #ui-container {{
             position: absolute; top: 15px; right: 15px;
             background-color: rgba(0, 0, 0, 0.2); 
@@ -336,15 +382,13 @@ html_d3 = f"""
             background-color: transparent; border-color: transparent;
             backdrop-filter: none; padding: 10px;
         }}
-        #ui-header {{
-            cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;
-        }}
+        #ui-header {{ cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; }}
         #ui-header h4 {{ margin: 0; font-size: 15px; }}
         #ui-body {{ display: block; margin-top: 15px; transition: opacity 0.3s; }}
         
         .search-box {{ width: 100%; padding: 8px; margin-bottom: 10px; border-radius: 4px; border: none; box-sizing: border-box; background: rgba(255, 255, 255, 0.9); }}
         .btn {{ width: 100%; padding: 8px; margin-bottom: 5px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; }}
-        .btn-search {{ background-color: #5DD5F0; color: #222; }}
+        .btn-search {{ background-color: {PALETTE['light_blue_cyan']}; color: #222; }}
         .btn-search:hover {{ background-color: #3cb8d3; }}
         .btn-reset {{ background-color: rgba(255, 255, 255, 0.15); color: white; }}
         .btn-reset:hover {{ background-color: rgba(255, 255, 255, 0.3); }}
@@ -400,9 +444,6 @@ html_d3 = f"""
         }});
         svg.call(zoom);
 
-        // ==========================================
-        // CRIAR MARCADORES (SETAS)
-        // ==========================================
         const defs = svg.append("defs");
         const uniqueColors = [...new Set(graphData.links.map(d => d.color))];
         
@@ -420,14 +461,20 @@ html_d3 = f"""
             .attr("d", "M0,-5L10,0L0,5")
             .attr("fill", d => d);
 
-        // ==========================================
-        // FÍSICA E DESENHO
-        // ==========================================
-        const simulation = d3.forceSimulation(graphData.nodes)
-            .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(70))
-            .force("charge", d3.forceManyBody().strength(-150))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collision", d3.forceCollide().radius(d => d.size + 4));
+            const simulation = d3.forceSimulation(graphData.nodes)
+            // 1. Molas muito mais longas (semelhante ao springLength: 230 do seu PyVis antigo)
+            .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(200))
+            
+            // 2. Repulsão magnética bem mais forte para afastar as ramificações
+            .force("charge", d3.forceManyBody().strength(-400))
+            
+            // 3. Substituímos o "forceCenter" estático por uma gravidade X e Y suave. 
+            // Isso puxa suavemente os grupos isolados para orbitarem o centro em um formato circular.
+            .force("x", d3.forceX(width / 2).strength(0.04))
+            .force("y", d3.forceY(height / 2).strength(0.04))
+            
+            // 4. Folga extra para os nós não se sobreporem
+            .force("collision", d3.forceCollide().radius(d => d.size + 8));
 
         const link = g.append("g")
             .attr("stroke-opacity", 0.6)
@@ -463,10 +510,14 @@ html_d3 = f"""
         .on("mouseout", function(event, d) {{
             tooltip.transition().duration(500).style("opacity", 0);
             d3.select(this).attr("stroke", "#222222").attr("stroke-width", 1.5);
+        }})
+        .on("dblclick", function(event, d) {{
+            // Oculta o tooltip e ativa a busca no nó clicado
+            tooltip.style("opacity", 0);
+            document.getElementById('search-input').value = d.id;
+            searchNode();
         }});
-        
 
-        // Lógica matemática para as setas pararem na borda
         simulation.on("tick", () => {{
             link
                 .attr("x1", d => d.source.x)
@@ -476,7 +527,7 @@ html_d3 = f"""
                     const dy = d.target.y - d.source.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     if (dist === 0) return d.target.x;
-                    const padding = d.target.size + 8; // Raio do nó + compensação da seta
+                    const padding = d.target.size + 8;
                     return d.target.x - (dx * padding) / dist;
                 }})
                 .attr("y2", d => {{
@@ -484,7 +535,7 @@ html_d3 = f"""
                     const dy = d.target.y - d.source.y;
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     if (dist === 0) return d.target.y;
-                    const padding = d.target.size + 8; // Raio do nó + compensação da seta
+                    const padding = d.target.size + 8;
                     return d.target.y - (dy * padding) / dist;
                 }});
 
@@ -509,22 +560,18 @@ html_d3 = f"""
             return d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended);
         }}
 
-function searchNode() {{
+        function searchNode() {{
             const term = document.getElementById('search-input').value.toLowerCase().trim();
             if (!term) {{ resetView(); return; }}
 
             const matchedNodes = graphData.nodes.filter(n => n.id.toLowerCase().includes(term));
             if (matchedNodes.length === 0) {{ alert('Nenhum pesquisador encontrado com esse nome.'); resetView(); return; }}
 
-            // 1. Identifica os IDs de quem foi buscado
             const matchedIds = new Set(matchedNodes.map(n => n.id));
-
-            // 2. Mapeia os vizinhos (conexões diretas) e as linhas que os unem
             const neighborIds = new Set();
             const connectedLinks = new Set();
 
             graphData.links.forEach(l => {{
-                // No D3, após a simulação iniciar, source e target viram objetos
                 if (matchedIds.has(l.source.id)) {{
                     neighborIds.add(l.target.id);
                     connectedLinks.add(l);
@@ -534,18 +581,15 @@ function searchNode() {{
                 }}
             }});
 
-            // 3. Destaca o pesquisador e seus vizinhos, esmaecendo o resto
             node.transition().duration(500)
                 .attr("opacity", d => (matchedIds.has(d.id) || neighborIds.has(d.id)) ? 1 : 0.05)
                 .attr("stroke", d => matchedIds.has(d.id) ? "#FFF" : "#222222")
                 .attr("stroke-width", d => matchedIds.has(d.id) ? 3 : 1.5);
             
-            // 4. Esconde as linhas distantes e suas setas alterando a "opacity" geral para zero
             link.transition().duration(500)
                 .attr("opacity", d => connectedLinks.has(d) ? 1 : 0.0) 
                 .attr("stroke-opacity", d => connectedLinks.has(d) ? 0.8 : 0.0);
 
-            // 5. Move a câmera para o primeiro resultado
             const target = matchedNodes[0];
             const transform = d3.zoomIdentity.translate(width / 2, height / 2).scale(2).translate(-target.x, -target.y);
             svg.transition().duration(1200).call(zoom.transform, transform);
@@ -553,16 +597,8 @@ function searchNode() {{
 
         function resetView() {{
             document.getElementById('search-input').value = '';
-            
-            node.transition().duration(500)
-                .attr("opacity", 1)
-                .attr("stroke", "#222222")
-                .attr("stroke-width", 1.5);
-                
-            link.transition().duration(500)
-                .attr("opacity", 1)          // Traz as setas de volta
-                .attr("stroke-opacity", 0.6); // Retorna a transparência original da linha
-                
+            node.transition().duration(500).attr("opacity", 1).attr("stroke", "#222222").attr("stroke-width", 1.5);
+            link.transition().duration(500).attr("opacity", 1).attr("stroke-opacity", 0.6);
             svg.transition().duration(1000).call(zoom.transform, d3.zoomIdentity);
         }}
 
@@ -591,6 +627,82 @@ function searchNode() {{
 components.html(html_d3, height=800, scrolling=False)
 
 # --- 6. Seção de Análise da Rede (com Layout de Colunas) ---
+
+# --- Função Auxiliar para os Gráficos Secundários em D3.js ---
+def render_d3_simple_graph(graph_data_json):
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="utf-8">
+        <script src="https://d3js.org/d3.v7.min.js"></script>
+        <style>
+            body {{ margin: 0; background-color: #222222; overflow: hidden; font-family: sans-serif; }}
+            svg {{ width: 100vw; height: 100vh; display: block; cursor: grab; }}
+            svg:active {{ cursor: grabbing; }}
+            #tooltip {{
+                position: absolute; background-color: rgba(15, 15, 25, 0.95); color: #fff;
+                padding: 10px 15px; border-radius: 6px; pointer-events: none;
+                font-size: 13px; line-height: 1.4; border: 1px solid #5DD5F0;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.5); opacity: 0; transition: opacity 0.2s; z-index: 20;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="tooltip"></div>
+        <svg id="network-graph"></svg>
+        <script>
+            const graphData = {graph_data_json};
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            const svg = d3.select("#network-graph");
+            const g = svg.append("g");
+
+            const zoom = d3.zoom().scaleExtent([0.1, 4]).on("zoom", (event) => {{ g.attr("transform", event.transform); }});
+            svg.call(zoom);
+
+            const defs = svg.append("defs");
+            const uniqueColors = [...new Set(graphData.links.map(d => d.color))];
+            defs.selectAll("marker").data(uniqueColors).enter().append("marker")
+                .attr("id", d => `arrow-${{d.replace('#', '')}}`).attr("viewBox", "0 -5 10 10")
+                .attr("refX", 0).attr("refY", 0).attr("markerWidth", 6).attr("markerHeight", 6)
+                .attr("orient", "auto").append("path").attr("d", "M0,-5L10,0L0,5").attr("fill", d => d);
+
+            const simulation = d3.forceSimulation(graphData.nodes)
+                .force("link", d3.forceLink(graphData.links).id(d => d.id).distance(150))
+                .force("charge", d3.forceManyBody().strength(-300))
+                .force("x", d3.forceX(width / 2).strength(0.05))
+                .force("y", d3.forceY(height / 2).strength(0.05))
+                .force("collision", d3.forceCollide().radius(d => d.size + 4));
+
+            const link = g.append("g").attr("stroke-opacity", 0.6).selectAll("line").data(graphData.links).join("line")
+                .attr("stroke", d => d.color).attr("stroke-width", d => d.width)
+                .attr("stroke-dasharray", d => d.dashed === "0" ? null : d.dashed)
+                .attr("marker-end", d => `url(#arrow-${{d.color.replace('#', '')}})`);
+
+            const node = g.append("g").selectAll("circle").data(graphData.nodes).join("circle")
+                .attr("r", d => d.size).attr("fill", d => d.color).attr("stroke", "#222222").attr("stroke-width", 1.5)
+                .call(d3.drag()
+                    .on("start", (event) => {{ if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }})
+                    .on("drag", (event) => {{ event.subject.fx = event.x; event.subject.fy = event.y; }})
+                    .on("end", (event) => {{ if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }}));
+
+            const tooltip = d3.select("#tooltip");
+            node.on("mouseover", function(event, d) {{ tooltip.transition().duration(200).style("opacity", 1); tooltip.html(d.title); d3.select(this).attr("stroke", "#FFF").attr("stroke-width", 3); }})
+                .on("mousemove", function(event) {{ tooltip.style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 15) + "px"); }})
+                .on("mouseout", function(event, d) {{ tooltip.transition().duration(500).style("opacity", 0); d3.select(this).attr("stroke", "#222222").attr("stroke-width", 1.5); }});
+
+            simulation.on("tick", () => {{
+                link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+                    .attr("x2", d => {{ const dx = d.target.x - d.source.x; const dy = d.target.y - d.source.y; const dist = Math.sqrt(dx*dx + dy*dy); if (dist===0) return d.target.x; return d.target.x - (dx * (d.target.size + 8)) / dist; }})
+                    .attr("y2", d => {{ const dx = d.target.x - d.source.x; const dy = d.target.y - d.source.y; const dist = Math.sqrt(dx*dx + dy*dy); if (dist===0) return d.target.y; return d.target.y - (dy * (d.target.size + 8)) / dist; }});
+                node.attr("cx", d => d.x).attr("cy", d => d.y);
+            }});
+        </script>
+    </body>
+    </html>
+    """
 
 st.header("Análise da Rede", divider='rainbow')
 
@@ -670,57 +782,44 @@ with left_col:
 
 
 # --- Coluna da Direita: Visualização do Grafo ---
+# --- Coluna da Direita: Visualização do Grafo ---
 with right_col:
     # A visualização do subgrafo só aparece se a rede não for conectada
     if not nx.is_connected(G):
-        # Filtra as arestas para incluir apenas aquelas do maior componente
-        edges_subgraph = [
-            edge for edge in detailed_edges
-            if edge['source'] in largest_cc_nodes and edge['target'] in largest_cc_nodes
-        ]
-
-        # Cria uma nova instância do Pyvis para o subgrafo
-        net_subgraph = Network(notebook=True, height="550px", width="100%", cdn_resources='remote', directed=True,
-                               bgcolor="#222222", font_color="white")
-
-        # Adiciona os nós e arestas do subgrafo (lógica reutilizada)
+        edges_subgraph = [edge for edge in detailed_edges if edge['source'] in largest_cc_nodes and edge['target'] in largest_cc_nodes]
+        d3_nodes_sub = []
+        d3_links_sub = []
+        
         for node_name in largest_cc_nodes:
             is_docente = node_name in imd_docentes
             is_docent_advisor = any(edge['source'] == node_name and edge['target'] in imd_docentes for edge in edges_subgraph)
-            if is_docente or is_docent_advisor: node_color = "#4A478A"
-            else: node_color = "#5DD5F0"
+            node_color = PALETTE['medium_blue_purple'] if (is_docente or is_docent_advisor) else PALETTE['light_blue_cyan']
+            
             total_degree = out_degree_total.get(node_name, 0) + in_degree_total.get(node_name, 0)
-            node_size = BASE_NODE_SIZE + (total_degree ** 1.2) * 0.5
-            node_size = min(node_size, MAX_NODE_SIZE)
-            title_text = f"{node_name}"+ "\n" + f"Formação: {node_details[node_name]['Formacao']}"
-            net_subgraph.add_node(node_name, label=node_name, color=node_color, size=node_size, title=title_text, font={'size': 12, 'color': PALETTE['text_white'] })
+            node_size = min(BASE_NODE_SIZE + (total_degree ** 1.2) * 0.5, MAX_NODE_SIZE)
+            title_text = f"<div style='margin-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 5px; font-size: 14px;'><strong>{node_name}</strong></div>Formação: {node_details[node_name]['Formacao']}"
+            
+            d3_nodes_sub.append({"id": node_name, "color": node_color, "size": node_size, "title": title_text})
 
         for edge in edges_subgraph:
             edge_color = ""
-            dashes = False
             width = 1.5
+            dashed = "0"
             if edge['type'] == 'Doutorado':
                 edge_color = PALETTE['accent_yellow_orange']
-                if edge['co']: dashes = True; edge_color = PALETTE['edge_co_doutorado']; width = 1
+                if edge['co']: dashed = "5,5"; edge_color = PALETTE['edge_co_doutorado']; width = 1
             elif edge['type'] == 'Mestrado':
                 edge_color = PALETTE['light_blue_cyan']
-                if edge['co']: dashes = True; edge_color = PALETTE['edge_co_mestrado']; width = 1
+                if edge['co']: dashed = "5,5"; edge_color = PALETTE['edge_co_mestrado']; width = 1
             elif edge['type'] == 'Pós-Doutorado':
                 edge_color = PALETTE['pós_doutorado']
-                if edge['co']: dashes = True; edge_color = PALETTE['edge_co_pos_doutorado']; width = 1
-            edge_title = f"{edge['source']} -> {edge['target']}\\n{edge['type']} ({edge['year']}){' [Coorientação]' if edge['co'] else ''}"
-            if edge_color: net_subgraph.add_edge(edge['source'], edge['target'], color=edge_color, dashes=dashes, title=edge_title, width=width)
+                if edge['co']: dashed = "5,5"; edge_color = PALETTE['edge_co_pos_doutorado']; width = 1
+            
+            if edge_color:
+                d3_links_sub.append({"source": edge['source'], "target": edge['target'], "color": edge_color, "width": width, "dashed": dashed})
 
-        net_subgraph.set_options(options_str)
-        try:
-            subgraph_file_path = "subgraph_network.html"
-            net_subgraph.save_graph(subgraph_file_path)
-            with open(subgraph_file_path, 'r', encoding='utf-8') as f:
-                html_content_subgraph = f.read()
-            st.components.v1.html(html_content_subgraph, height=560, scrolling=True)
-        except Exception as e:
-            st.error(f"Ocorreu um erro ao gerar o grafo do subcomponente: {e}")
-
+        graph_data_sub_json = json.dumps({"nodes": d3_nodes_sub, "links": d3_links_sub})
+        st.components.v1.html(render_d3_simple_graph(graph_data_sub_json), height=560, scrolling=True)
 
 # --- Continuação da Análise (agora em largura total, abaixo das colunas) ---
 st.divider() # Adiciona uma linha divisória
@@ -1070,48 +1169,39 @@ try:
     st.subheader("Visualização das Comunidades no Grafo")
     st.markdown("Abaixo, a rede completa é renderizada novamente, mas desta vez cada nó é colorido de acordo com a comunidade à qual pertence. Isso permite uma identificação visual imediata dos principais agrupamentos.")
 
-    # Cria uma nova instância do Pyvis para o grafo de comunidades
-    net_community = Network(notebook=True, height="750px", width="100%", cdn_resources='remote', directed=True, bgcolor="#222222", font_color="white")
+    # --- Visualização do Grafo Colorido por Comunidades ---
+    st.subheader("Visualização das Comunidades no Grafo")
+    st.markdown("Abaixo, a rede completa é renderizada novamente, mas desta vez cada nó é colorido de acordo com a comunidade à qual pertence. Isso permite uma identificação visual imediata dos principais agrupamentos.")
 
-    # Define uma paleta de cores para as comunidades
     community_palette = ["#E63946", "#F1FAEE", "#A8DADC", "#457B9D", "#1D3557",
                          "#FFC300", "#588157", "#3A5A40", "#E07A5F", "#3D405B",
                          "#81B29A", "#F2CC8F", "#D5573B", "#6A994E", "#F7B500"]
 
-    # Adiciona os nós com a cor da sua comunidade
+    d3_nodes_com = []
+    d3_links_com = []
+
     for node_name in G.nodes():
         community_id = partition.get(node_name, -1)
         node_color = community_palette[community_id % len(community_palette)]
-        # Reutiliza os dados já processados para tamanho e tooltip
-        total_degree = out_degree_total.get(node_name, 0) + in_degree_total.get(node_name, 0)
-        node_size = BASE_NODE_SIZE + (total_degree ** 1.2) * 0.5
-        node_size = min(node_size, MAX_NODE_SIZE)
-        # (O código completo do tooltip não foi adicionado aqui para simplicidade, mas poderia ser)
-        title_text = f"Comunidade: {community_id}"+ "\n"+f"Nome:{node_name}"
-        net_community.add_node(node_name, label=node_name, color=node_color, size=node_size, title=title_text)
-
-    # Adiciona as arestas com um estilo neutro e uniforme
-    for edge in detailed_edges:
-        # Define uma cor cinza claro para todas as arestas
-        edge_color = "#999999" 
-        width = 1
-        dashes = False
         
-        # Mantém a diferenciação para coorientação, que é uma informação estrutural
+        total_degree = out_degree_total.get(node_name, 0) + in_degree_total.get(node_name, 0)
+        node_size = min(BASE_NODE_SIZE + (total_degree ** 1.2) * 0.5, MAX_NODE_SIZE)
+        title_text = f"<div style='margin-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 5px; font-size: 14px;'><strong>{node_name}</strong></div>Comunidade: {community_id}"
+        
+        d3_nodes_com.append({"id": node_name, "color": node_color, "size": node_size, "title": title_text})
+
+    for edge in detailed_edges:
+        # Arestas neutras e acinzentadas para não ofuscar as cores das comunidades
+        width = 1.0
+        dashed = "0"
         if edge['co']:
-            dashes = True
+            dashed = "5,5"
             width = 0.8
+            
+        d3_links_com.append({"source": edge['source'], "target": edge['target'], "color": "#777777", "width": width, "dashed": dashed})
 
-        edge_title = f"{edge['source']} -> {edge['target']}\\n{edge['type']} ({edge['year']}){' [Coorientação]' if edge['co'] else ''}"
-        net_community.add_edge(edge['source'], edge['target'], color=edge_color, dashes=dashes, title=edge_title, width=width)
-
-    # Exibe o novo grafo
-    net_community.set_options(options_str)
-    community_graph_path = "community_graph.html"
-    net_community.save_graph(community_graph_path)
-    with open(community_graph_path, 'r', encoding='utf-8') as f:
-        html_content_community = f.read()
-    st.components.v1.html(html_content_community, height=750, scrolling=True)
+    graph_data_com_json = json.dumps({"nodes": d3_nodes_com, "links": d3_links_com})
+    st.components.v1.html(render_d3_simple_graph(graph_data_com_json), height=750, scrolling=True)
 
     st.divider()
 
